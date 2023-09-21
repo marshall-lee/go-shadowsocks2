@@ -4,10 +4,11 @@ import (
 	"crypto/rand"
 	"errors"
 	"io"
-	"net"
+	"net/netip"
 	"sync"
 
 	"github.com/shadowsocks/go-shadowsocks2/internal"
+	"github.com/shadowsocks/go-shadowsocks2/udp"
 )
 
 // ErrShortPacket means that the packet is too short for a valid encrypted packet.
@@ -63,34 +64,34 @@ func Unpack(dst, pkt []byte, ciph Cipher) ([]byte, error) {
 	return b, err
 }
 
-type packetConn struct {
-	net.PacketConn
+type udpConn struct {
+	udp.Conn
 	Cipher
 	sync.Mutex
 	buf []byte // write lock
 }
 
-// NewPacketConn wraps a net.PacketConn with cipher
-func NewPacketConn(c net.PacketConn, ciph Cipher) net.PacketConn {
+// NewUDPConn wraps a udp.Conn with cipher
+func NewUDPConn(c udp.Conn, ciph Cipher) udp.Conn {
 	const maxPacketSize = 64 * 1024
-	return &packetConn{PacketConn: c, Cipher: ciph, buf: make([]byte, maxPacketSize)}
+	return &udpConn{Conn: c, Cipher: ciph, buf: make([]byte, maxPacketSize)}
 }
 
 // WriteTo encrypts b and write to addr using the embedded PacketConn.
-func (c *packetConn) WriteTo(b []byte, addr net.Addr) (int, error) {
+func (c *udpConn) WriteTo(b []byte, addr netip.AddrPort) (int, error) {
 	c.Lock()
 	defer c.Unlock()
 	buf, err := Pack(c.buf, b, c)
 	if err != nil {
 		return 0, err
 	}
-	_, err = c.PacketConn.WriteTo(buf, addr)
+	_, err = c.Conn.WriteTo(buf, addr)
 	return len(b), err
 }
 
 // ReadFrom reads from the embedded PacketConn and decrypts into b.
-func (c *packetConn) ReadFrom(b []byte) (int, net.Addr, error) {
-	n, addr, err := c.PacketConn.ReadFrom(b)
+func (c *udpConn) ReadFrom(b []byte) (int, netip.AddrPort, error) {
+	n, addr, err := c.Conn.ReadFrom(b)
 	if err != nil {
 		return n, addr, err
 	}

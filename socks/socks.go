@@ -2,8 +2,10 @@
 package socks
 
 import (
+	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"strconv"
 )
 
@@ -133,38 +135,66 @@ func SplitAddr(b []byte) Addr {
 
 // ParseAddr parses the address in string s. Returns nil if failed.
 func ParseAddr(s string) Addr {
-	var addr Addr
 	host, port, err := net.SplitHostPort(s)
 	if err != nil {
 		return nil
 	}
-	if ip := net.ParseIP(host); ip != nil {
-		if ip4 := ip.To4(); ip4 != nil {
-			addr = make([]byte, 1+net.IPv4len+2)
-			addr[0] = AtypIPv4
-			copy(addr[1:], ip4)
-		} else {
-			addr = make([]byte, 1+net.IPv6len+2)
-			addr[0] = AtypIPv6
-			copy(addr[1:], ip)
-		}
-	} else {
-		if len(host) > 255 {
-			return nil
-		}
-		addr = make([]byte, 1+1+len(host)+2)
-		addr[0] = AtypDomainName
-		addr[1] = byte(len(host))
-		copy(addr[2:], host)
-	}
-
 	portnum, err := strconv.ParseUint(port, 10, 16)
 	if err != nil {
 		return nil
 	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return serializeAddrPort(addr, uint16(portnum))
+	}
 
-	addr[len(addr)-2], addr[len(addr)-1] = byte(portnum>>8), byte(portnum)
+	if len(host) > 255 {
+		return nil
+	}
+	return serialize(AtypDomainName, []byte(host), uint16(portnum))
+}
 
+func SerializeAddrPort(addrPort netip.AddrPort) Addr {
+	return serializeAddrPort(addrPort.Addr(), addrPort.Port())
+}
+
+func serializeAddrPort(addr netip.Addr, port uint16) Addr {
+	if addr.Is4() {
+		rawAddr := addr.As4()
+		return serialize(AtypIPv4, rawAddr[:], port)
+	} else if addr.Is4In6() {
+		rawAddr := addr.Unmap().As4()
+		return serialize(AtypIPv4, rawAddr[:], port)
+	} else if addr.Is6() {
+		rawAddr := addr.As16()
+		return serialize(AtypIPv6, rawAddr[:], port)
+	} else {
+		panic(fmt.Errorf("invalid address %v", addr))
+	}
+}
+
+func serialize(typ byte, rawAddr []byte, port uint16) Addr {
+	var addr Addr
+	var tail []byte
+	switch typ {
+	case AtypIPv4:
+		addr = make([]byte, 1+net.IPv4len+2)
+		addr[0] = typ
+		tail = addr[1:]
+	case AtypIPv6:
+		addr = make([]byte, 1+net.IPv6len+2)
+		addr[0] = typ
+		tail = addr[1:]
+	case AtypDomainName:
+		addr = make([]byte, 1+1+len(rawAddr)+2)
+		addr[0] = typ
+		addr[1] = byte(len(rawAddr))
+		tail = addr[2:]
+	default:
+		panic(fmt.Errorf("unsupported type %v", typ))
+	}
+	copy(tail, rawAddr)
+	tail = tail[len(rawAddr):]
+	tail[0], tail[1] = byte(port>>8), byte(port)
 	return addr
 }
 

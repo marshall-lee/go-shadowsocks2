@@ -120,7 +120,7 @@ func main() {
 		if flags.UDPTun != "" {
 			for _, tun := range strings.Split(flags.UDPTun, ",") {
 				p := strings.Split(tun, "=")
-				go udpLocal(p[0], udpAddr, p[1], ciph.PacketConn)
+				go udpTun(p[0], udpAddr, p[1], ciph.UDPConn)
 			}
 		}
 
@@ -135,7 +135,7 @@ func main() {
 			socks.UDPEnabled = flags.UDPSocks
 			go socksLocal(flags.Socks, addr, ciph.StreamConn)
 			if flags.UDPSocks {
-				go udpSocksLocal(flags.Socks, udpAddr, ciph.PacketConn)
+				go udpSocksLocal(flags.Socks, udpAddr, ciph.UDPConn)
 			}
 		}
 
@@ -179,7 +179,7 @@ func main() {
 		}
 
 		if flags.UDP {
-			go udpRemote(udpAddr, ciph.PacketConn)
+			go udpRemote(udpAddr, ciph.UDPConn)
 		}
 		if flags.TCP {
 			go tcpRemote(addr, ciph.StreamConn)

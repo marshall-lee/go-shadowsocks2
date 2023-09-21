@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
 	"github.com/shadowsocks/go-shadowsocks2/socks"
+	"github.com/shadowsocks/go-shadowsocks2/udp"
 )
 
 type mode int
@@ -20,12 +23,13 @@ const (
 const udpBufSize = 64 * 1024
 
 // Listen on laddr for UDP packets, encrypt and send to server to reach target.
-func udpLocal(laddr, server, target string, shadow func(net.PacketConn) net.PacketConn) {
-	srvAddr, err := net.ResolveUDPAddr("udp", server)
+func udpTun(laddr, server, target string, shadow func(udp.Conn) udp.Conn) {
+	srvUDPAddr, err := net.ResolveUDPAddr("udp", server)
 	if err != nil {
 		logf("UDP server address error: %v", err)
 		return
 	}
+	srvAddr := srvUDPAddr.AddrPort()
 
 	tgt := socks.ParseAddr(target)
 	if tgt == nil {
@@ -34,7 +38,10 @@ func udpLocal(laddr, server, target string, shadow func(net.PacketConn) net.Pack
 		return
 	}
 
-	c, err := net.ListenPacket("udp", laddr)
+	cfg := udp.ListenConfig{
+		DoNotFragment: true,
+	}
+	c, err := cfg.Listen(context.Background(), laddr)
 	if err != nil {
 		logf("UDP local listen error: %v", err)
 		return
@@ -53,9 +60,9 @@ func udpLocal(laddr, server, target string, shadow func(net.PacketConn) net.Pack
 			continue
 		}
 
-		pc := nm.Get(raddr.String())
-		if pc == nil {
-			pc, err = net.ListenPacket("udp", "")
+		pc := nm.Get(raddr)
+		if pc.Empty() {
+			pc, err = cfg.Listen(context.Background(), "")
 			if err != nil {
 				logf("UDP local listen error: %v", err)
 				continue
@@ -74,14 +81,18 @@ func udpLocal(laddr, server, target string, shadow func(net.PacketConn) net.Pack
 }
 
 // Listen on laddr for Socks5 UDP packets, encrypt and send to server to reach target.
-func udpSocksLocal(laddr, server string, shadow func(net.PacketConn) net.PacketConn) {
-	srvAddr, err := net.ResolveUDPAddr("udp", server)
+func udpSocksLocal(laddr, server string, shadow func(udp.Conn) udp.Conn) {
+	srvUDPAddr, err := net.ResolveUDPAddr("udp", server)
 	if err != nil {
 		logf("UDP server address error: %v", err)
 		return
 	}
+	srvAddr := srvUDPAddr.AddrPort()
 
-	c, err := net.ListenPacket("udp", laddr)
+	cfg := udp.ListenConfig{
+		DoNotFragment: true,
+	}
+	c, err := cfg.Listen(context.Background(), laddr)
 	if err != nil {
 		logf("UDP local listen error: %v", err)
 		return
@@ -98,9 +109,9 @@ func udpSocksLocal(laddr, server string, shadow func(net.PacketConn) net.PacketC
 			continue
 		}
 
-		pc := nm.Get(raddr.String())
+		pc := nm.Get(raddr)
 		if pc == nil {
-			pc, err = net.ListenPacket("udp", "")
+			pc, err = cfg.Listen(context.Background(), "")
 			if err != nil {
 				logf("UDP local listen error: %v", err)
 				continue
@@ -118,9 +129,74 @@ func udpSocksLocal(laddr, server string, shadow func(net.PacketConn) net.PacketC
 	}
 }
 
+func udpRedirLocal(server string, shadow func(udp.Conn) udp.Conn) {
+	srvUDPAddr, err := net.ResolveUDPAddr("udp", server)
+	if err != nil {
+		logf("UDP server address error: %v", err)
+		return
+	}
+	srvAddr := srvUDPAddr.AddrPort()
+
+	cfg := udp.ListenConfig{
+		Transparent:   true,
+		RecvOrigDst:   true,
+		DoNotFragment: true,
+	}
+	c, err := cfg.Listen(context.Background(), "")
+	if err != nil {
+		logf("UDP local listen error: %v", err)
+		return
+	}
+	defer c.Close()
+
+	nm := newNATmap(config.UDPTimeout)
+
+	logf("UDP redirect %s <-> %s", c.LocalAddr(), server)
+	for {
+		var buf [udpBufSize]byte
+		n, raddr, msg, err := c.ReadMsg(buf[:])
+		if err != nil {
+			logf("UDP local read error: %v", err)
+			continue
+		}
+		tgtAddrPort, err := msg.GetOrigDstAddr()
+		if err != nil {
+			logf("UDP local read error: failed to get the original destination")
+			continue
+		}
+		// dst = netip.AddrPortFrom(dst.Addr().WithZone("foo"), dst.Port())
+		tgt := socks.SerializeAddrPort(tgtAddrPort)
+
+		pc := nm.Get(raddr)
+		if pc == nil {
+			pc, err = cfg.Listen(context.Background(), "")
+			if err != nil {
+				logf("UDP local listen error: %v", err)
+				continue
+			}
+
+			pc = shadow(pc)
+			nm.Add(raddr, c, pc, relayClient)
+		}
+
+		var wbuf [udpBufSize]byte
+		copy(wbuf[:], tgt)
+		copy(wbuf[len(tgt):], buf[:n])
+
+		_, err = pc.WriteTo(wbuf[:len(tgt) + len(buf)], srvAddr)
+		if err != nil {
+			logf("UDP local write error: %v", err)
+			continue
+		}
+	}
+}
+
 // Listen on addr for encrypted packets and basically do UDP NAT.
-func udpRemote(addr string, shadow func(net.PacketConn) net.PacketConn) {
-	c, err := net.ListenPacket("udp", addr)
+func udpRemote(addr string, shadow func(udp.Conn) udp.Conn) {
+	cfg := udp.ListenConfig{
+		DoNotFragment: true,
+	}
+	c, err := cfg.Listen(context.Background(), addr)
 	if err != nil {
 		logf("UDP remote listen error: %v", err)
 		return
@@ -153,9 +229,9 @@ func udpRemote(addr string, shadow func(net.PacketConn) net.PacketConn) {
 
 		payload := buf[len(tgtAddr):n]
 
-		pc := nm.Get(raddr.String())
+		pc := nm.Get(raddr)
 		if pc == nil {
-			pc, err = net.ListenPacket("udp", "")
+			pc, err = cfg.Listen(context.Background(), "")
 			if err != nil {
 				logf("UDP remote listen error: %v", err)
 				continue
@@ -164,7 +240,7 @@ func udpRemote(addr string, shadow func(net.PacketConn) net.PacketConn) {
 			nm.Add(raddr, c, pc, remoteServer)
 		}
 
-		_, err = pc.WriteTo(payload, tgtUDPAddr) // accept only UDPAddr despite the signature
+		_, err = pc.WriteTo(payload, tgtUDPAddr.AddrPort())
 		if err != nil {
 			logf("UDP remote write error: %v", err)
 			continue
@@ -175,31 +251,31 @@ func udpRemote(addr string, shadow func(net.PacketConn) net.PacketConn) {
 // Packet NAT table
 type natmap struct {
 	sync.RWMutex
-	m       map[string]net.PacketConn
+	m       map[netip.AddrPort]udp.Conn
 	timeout time.Duration
 }
 
 func newNATmap(timeout time.Duration) *natmap {
 	m := &natmap{}
-	m.m = make(map[string]net.PacketConn)
+	m.m = make(map[netip.AddrPort]udp.Conn)
 	m.timeout = timeout
 	return m
 }
 
-func (m *natmap) Get(key string) net.PacketConn {
+func (m *natmap) Get(key netip.AddrPort) udp.Conn {
 	m.RLock()
 	defer m.RUnlock()
 	return m.m[key]
 }
 
-func (m *natmap) Set(key string, pc net.PacketConn) {
+func (m *natmap) Set(key netip.AddrPort, pc udp.Conn) {
 	m.Lock()
 	defer m.Unlock()
 
 	m.m[key] = pc
 }
 
-func (m *natmap) Del(key string) net.PacketConn {
+func (m *natmap) Del(key netip.AddrPort) udp.Conn {
 	m.Lock()
 	defer m.Unlock()
 
@@ -211,19 +287,19 @@ func (m *natmap) Del(key string) net.PacketConn {
 	return nil
 }
 
-func (m *natmap) Add(peer net.Addr, dst, src net.PacketConn, role mode) {
-	m.Set(peer.String(), src)
+func (m *natmap) Add(peer netip.AddrPort, dst, src udp.Conn, role mode) {
+	m.Set(peer, src)
 
 	go func() {
 		timedCopy(dst, peer, src, m.timeout, role)
-		if pc := m.Del(peer.String()); pc != nil {
+		if pc := m.Del(peer); pc != nil {
 			pc.Close()
 		}
 	}()
 }
 
 // copy from src to dst at target with read timeout
-func timedCopy(dst net.PacketConn, target net.Addr, src net.PacketConn, timeout time.Duration, role mode) error {
+func timedCopy(dst udp.Conn, target netip.AddrPort, src udp.Conn, timeout time.Duration, role mode) error {
 	buf := make([]byte, udpBufSize)
 
 	for {
@@ -235,7 +311,7 @@ func timedCopy(dst net.PacketConn, target net.Addr, src net.PacketConn, timeout 
 
 		switch role {
 		case remoteServer: // server -> client: add original packet source
-			srcAddr := socks.ParseAddr(raddr.String())
+			srcAddr := socks.SerializeAddrPort(raddr)
 			copy(buf[len(srcAddr):], buf[:n])
 			copy(buf, srcAddr)
 			_, err = dst.WriteTo(buf[:len(srcAddr)+n], target)

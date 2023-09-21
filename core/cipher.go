@@ -8,19 +8,20 @@ import (
 	"strings"
 
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
+	"github.com/shadowsocks/go-shadowsocks2/udp"
 )
 
 type Cipher interface {
 	StreamConnCipher
-	PacketConnCipher
+	UDPConnCipher
 }
 
 type StreamConnCipher interface {
 	StreamConn(net.Conn) net.Conn
 }
 
-type PacketConnCipher interface {
-	PacketConn(net.PacketConn) net.PacketConn
+type UDPConnCipher interface {
+	UDPConn(udp.Conn) udp.Conn
 }
 
 // ErrCipherNotSupported occurs when a cipher is not supported (likely because of security concerns).
@@ -84,15 +85,15 @@ func PickCipher(name string, key []byte, password string) (Cipher, error) {
 type aeadCipher struct{ shadowaead.Cipher }
 
 func (aead *aeadCipher) StreamConn(c net.Conn) net.Conn { return shadowaead.NewConn(c, aead) }
-func (aead *aeadCipher) PacketConn(c net.PacketConn) net.PacketConn {
-	return shadowaead.NewPacketConn(c, aead)
+func (aead *aeadCipher) UDPConn(c udp.Conn) udp.Conn {
+	return shadowaead.NewUDPConn(c, aead)
 }
 
 // dummy cipher does not encrypt
 type dummy struct{}
 
-func (dummy) StreamConn(c net.Conn) net.Conn             { return c }
-func (dummy) PacketConn(c net.PacketConn) net.PacketConn { return c }
+func (dummy) StreamConn(c net.Conn) net.Conn { return c }
+func (dummy) UDPConn(c udp.Conn) udp.Conn    { return c }
 
 // key-derivation function from original Shadowsocks
 func kdf(password string, keyLen int) []byte {
