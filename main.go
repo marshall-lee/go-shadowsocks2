@@ -22,10 +22,10 @@ var config struct {
 	Verbose    bool
 	UDPTimeout time.Duration
 	TCPCork    bool
+	Fwmark     uint
 }
 
 func main() {
-
 	var flags struct {
 		Client     string
 		Server     string
@@ -64,6 +64,7 @@ func main() {
 	flag.BoolVar(&flags.TCP, "tcp", true, "(server-only) enable TCP support")
 	flag.BoolVar(&config.TCPCork, "tcpcork", false, "coalesce writing first few packets")
 	flag.DurationVar(&config.UDPTimeout, "udptimeout", 5*time.Minute, "UDP tunnel timeout")
+	flag.UintVar(&config.Fwmark, "fwmark", 0, "Mark outbound sockets")
 	flag.Parse()
 
 	if flags.Keygen > 0 {

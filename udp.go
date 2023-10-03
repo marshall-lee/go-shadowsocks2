@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"sync"
@@ -97,6 +98,15 @@ func udpSocksLocal(laddr, server string, shadow func(net.PacketConn) net.PacketC
 			logf("UDP local read error: %v", err)
 			continue
 		}
+		if n < 3 {
+			logf("UDP local read error: short packet")
+			continue
+		}
+		socksAddr, err := socks.ReadAddr(bytes.NewBuffer(buf[3:n]))
+		if err != nil {
+			logf("UDP local read error: %v", err)
+			continue
+		}
 
 		pc := nm.Get(raddr.String())
 		if pc == nil {
@@ -105,7 +115,7 @@ func udpSocksLocal(laddr, server string, shadow func(net.PacketConn) net.PacketC
 				logf("UDP local listen error: %v", err)
 				continue
 			}
-			logf("UDP socks tunnel %s <-> %s <-> %s", laddr, server, socks.Addr(buf[3:]))
+			logf("UDP socks tunnel %s <-> %s <-> %s", laddr, server, socksAddr)
 			pc = shadow(pc)
 			nm.Add(raddr, c, pc, socksClient)
 		}
