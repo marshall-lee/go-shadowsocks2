@@ -25,25 +25,26 @@ win32:
 	GOARCH=386 GOOS=windows $(GOBUILD) -o $(BINDIR)/$(NAME)-$@.exe
 
 
-test: test-linux-amd64 test-linux-arm64 test-macos-amd64 test-macos-arm64 test-win64 test-win32
+test:
+	go test
 
-test-linux-amd64:
-	GOARCH=amd64 GOOS=linux go test
+.PHONY: systemtest-linux
+systemtest-linux:
+	$(GOBUILD) -o ./systemtest/$(NAME)
+	go test -C ./systemtest -c -o $(NAME)-systemtest
+	sudo setcap "cap_net_admin+ep" ./systemtest/$(NAME)
+	sudo setcap "cap_net_admin+ep cap_sys_admin+ep" ./systemtest/$(NAME)-systemtest
+	./systemtest/$(NAME)-systemtest -test.v -shadowsocks-path=./systemtest/$(NAME)
 
-test-linux-arm64:
-	GOARCH=arm64 GOOS=linux go test
+.PHONY: systemtest
+systemtest:
+	$(GOBUILD) -o ./systemtest/$(NAME)
+	go test -C ./systemtest -v -shadowsocks-path=./$(NAME)
 
-test-macos-amd64:
-	GOARCH=amd64 GOOS=darwin go test
-
-test-macos-arm64:
-	GOARCH=arm64 GOOS=darwin go test
-
-test-win64:
-	GOARCH=amd64 GOOS=windows go test
-
-test-win32:
-	GOARCH=386 GOOS=windows go test
+systemtest-linux-amd64: linux-amd64
+systemtest-linux-arm64: linux-arm64
+systemtest-macos-amd64: macos-amd64
+systemtest-macos-arm64: macos-arm64
 
 releases: linux-amd64 linux-arm64 macos-amd64 macos-arm64 win64 win32
 	chmod +x $(BINDIR)/$(NAME)-*
